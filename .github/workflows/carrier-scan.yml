@@ -1,0 +1,37 @@
+name: carrier-scan
+# Anti-dropper supply-chain gate (self-contained). Static, read-only — fails the PR if
+# the 2026-05 config-injection dropper, a fake font, or a concealed payload is
+# (re)introduced. Never installs or builds.
+on:
+  pull_request:
+  push:
+    branches: [main, master, develop, prod]
+permissions:
+  contents: read
+jobs:
+  carrier-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (no build)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Scan for supply-chain carriers
+        shell: bash
+        run: |
+          set -uo pipefail
+          fail=0
+          prune=( -path '*/node_modules/*' -o -path '*/.git/*' -o -path '*/.venv/*' -o -path '*/dist/*' )
+          while IFS= read -r f; do
+            grep -qE 'createRequire\(import\.meta\.url\)|_\$_[0-9a-fA-F]{4}|global\[.!.\][[:space:]]*=|8-2902|8-3064|app-GitHubDesktop-eval' "$f" 2>/dev/null \
+              && { echo "::error file=$f::CARRIER config-injection marker"; fail=1; }
+          done < <(find . \( "${prune[@]}" \) -prune -o -type f \( -name '*.config.js' -o -name '*.config.mjs' -o -name '*.config.cjs' -o -name '*.config.ts' \) -print)
+          while IFS= read -r f; do
+            m=$(head -c4 "$f" | xxd -p)
+            case "$m" in 774f4632|774f4646|00010000|4f54544f|74727565|74746366) : ;;
+              *) echo "::error file=$f::CARRIER fake font (magic=$m, not a real font container)"; fail=1 ;; esac
+          done < <(find . \( "${prune[@]}" \) -prune -o -type f \( -name '*.woff2' -o -name '*.woff' -o -name '*.ttf' -o -name '*.otf' \) -print)
+          while IFS= read -r f; do echo "::error file=$f::CARRIER concealed push/automation payload"; fail=1
+          done < <(find . \( "${prune[@]}" \) -prune -o -type f \( -iname '*_push.bat' -o -iname '*_push.ps1' -o -iname 'branch_structure.json' \) -print)
+          if [ "$fail" = 1 ]; then echo "carrier-scan: FAIL — real carrier above. DO NOT merge/build."; exit 1; fi
+          echo "carrier-scan: CLEAN"
